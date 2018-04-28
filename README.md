@@ -1,5 +1,6 @@
 # TegraRcmSmash ![License](https://img.shields.io/badge/License-GPLv3-blue.svg)
 A reimplementation of fusee-launcher in C++ for Windows platforms.
+
 Lets you launch fusee payloads to a USB connected Switch in RCM mode.
 
 ## Driver setup
@@ -11,6 +12,7 @@ Lets you launch fusee payloads to a USB connected Switch in RCM mode.
 
 ## Usage
  TegraRcmSmash.exe [-V 0x0955] [-P 0x7321] [--relocator=intermezzo.bin] [-w] inputFilename.bin
+
  If your Switch is ready and waiting in RCM mode, you can also just drag and drop the payload right onto TegraRcmSmash.exe
 
 ## Binary releases
