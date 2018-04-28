@@ -1,0 +1,10 @@
+/Build
+/Out
+/ipch
+/.vs
+/.localhistory
+*.suo
+*.sdf
+*.opensdf
+*.aps
+Thumbs.db

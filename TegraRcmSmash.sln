@@ -1,0 +1,43 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 15
+VisualStudioVersion = 15.0.27428.2037
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "TegraRcmSmash", "TegraRcmSmash.vcxproj", "{A92875AE-4FD8-430C-8C98-1387EAB0548F}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Debug|x86 = Debug|x86
+		Release|x64 = Release|x64
+		Release|x86 = Release|x86
+		Static Debug|x64 = Static Debug|x64
+		Static Debug|x86 = Static Debug|x86
+		Static Release|x64 = Static Release|x64
+		Static Release|x86 = Static Release|x86
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{A92875AE-4FD8-430C-8C98-1387EAB0548F}.Debug|x64.ActiveCfg = Debug|x64
+		{A92875AE-4FD8-430C-8C98-1387EAB0548F}.Debug|x64.Build.0 = Debug|x64
+		{A92875AE-4FD8-430C-8C98-1387EAB0548F}.Debug|x86.ActiveCfg = Debug|Win32
+		{A92875AE-4FD8-430C-8C98-1387EAB0548F}.Debug|x86.Build.0 = Debug|Win32
+		{A92875AE-4FD8-430C-8C98-1387EAB0548F}.Release|x64.ActiveCfg = Release|x64
+		{A92875AE-4FD8-430C-8C98-1387EAB0548F}.Release|x64.Build.0 = Release|x64
+		{A92875AE-4FD8-430C-8C98-1387EAB0548F}.Release|x86.ActiveCfg = Release|Win32
+		{A92875AE-4FD8-430C-8C98-1387EAB0548F}.Release|x86.Build.0 = Release|Win32
+		{A92875AE-4FD8-430C-8C98-1387EAB0548F}.Static Debug|x64.ActiveCfg = Static Debug|x64
+		{A92875AE-4FD8-430C-8C98-1387EAB0548F}.Static Debug|x64.Build.0 = Static Debug|x64
+		{A92875AE-4FD8-430C-8C98-1387EAB0548F}.Static Debug|x86.ActiveCfg = Static Debug|Win32
+		{A92875AE-4FD8-430C-8C98-1387EAB0548F}.Static Debug|x86.Build.0 = Static Debug|Win32
+		{A92875AE-4FD8-430C-8C98-1387EAB0548F}.Static Release|x64.ActiveCfg = Static Release|x64
+		{A92875AE-4FD8-430C-8C98-1387EAB0548F}.Static Release|x64.Build.0 = Static Release|x64
+		{A92875AE-4FD8-430C-8C98-1387EAB0548F}.Static Release|x86.ActiveCfg = Static Release|Win32
+		{A92875AE-4FD8-430C-8C98-1387EAB0548F}.Static Release|x86.Build.0 = Static Release|Win32
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {0A22DFC3-F150-4BA1-966B-7E5388FC078C}
+	EndGlobalSection
+EndGlobal
