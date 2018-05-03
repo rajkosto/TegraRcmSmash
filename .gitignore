@@ -7,4 +7,6 @@
 *.sdf
 *.opensdf
 *.aps
+*.user
 Thumbs.db
+
