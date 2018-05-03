@@ -12,15 +12,11 @@ Lets you launch fusee/shofEL2 payloads to a USB connected Switch in RCM mode.
 
 ## Usage
  TegraRcmSmash.exe [-V 0x0955] [-P 0x7321] [--relocator=intermezzo.bin] [-w] inputFilename.bin ([PARAM:VALUE]|[0xADDR:filename])*
-
  If your Switch is ready and waiting in RCM mode, you can also just drag and drop the payload right onto TegraRcmSmash.exe
 
  An example cmdline for launching linux using coreboot is something like this (the empty relocator is important):
-
    TegraRcmSmash.exe -w --relocator= "coreboot/cbfs.bin" "CBFS:coreboot/coreboot.rom"
-
  After that, you can use imx_load as you would on Linux (Windows binaries available at https://github.com/rajkosto/imx_usb_loader/releases)
-
  Alternatively, setup your u-boot cmdline to just load everything from microSD to not bother with imx_load ;)
 
 
