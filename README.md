@@ -5,7 +5,7 @@ Lets you launch fusee/shofEL2 payloads to a USB connected Switch in RCM mode.
 
 ## Driver setup
  1. Get your Switch into RCM mode and plug it into your Windows PC. It should show up somewhere (like Device manager) as "APX"
- 2. Download and run Zadig driver installer from [here](https://zadig.akeo.ie/)
+ 2. Download and run Zadig driver installer from https://zadig.akeo.ie/
  3. From the device list, choose APX (if it's not showing up in the list, go to Options menu and check List All Devices)
  4. For the driver type, cycle the arrows until you see libusbK (v3.0.7.0) in the text box (IMPORTANT!)
  5. Click the big Install Driver button. Device manager should now show "APX" under libusbK USB Devices tree item.
