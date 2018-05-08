@@ -1,5 +1,5 @@
 # TegraRcmSmash ![License](https://img.shields.io/badge/License-GPLv3-blue.svg)
-A reimplementation of fusee-launcher in C++ for Windows platforms.
+A reimplementation of [fusee-launcher](https://github.com/reswitched/fusee-launcher) by ktemkin in C++ for Windows platforms.
 
 Lets you launch fusee/shofEL2 payloads to a USB connected Switch in RCM mode.
 
@@ -18,7 +18,7 @@ Lets you launch fusee/shofEL2 payloads to a USB connected Switch in RCM mode.
  An example cmdline for launching linux using coreboot is something like this (the empty relocator is important):
    **TegraRcmSmash.exe -w --relocator= "coreboot/cbfs.bin" "CBFS:coreboot/coreboot.rom"**
 
- After that, you can use imx_load as you would on Linux (Windows binaries available at https://github.com/rajkosto/imx_usb_loader/releases)
+ After that, you can use imx_load as you would on Linux (Windows binaries available [here](https://github.com/rajkosto/imx_usb_loader/releases))
 
  Alternatively, setup your u-boot cmdline to just load everything from microSD to not bother with imx_load ;)
 
@@ -27,7 +27,7 @@ Lets you launch fusee/shofEL2 payloads to a USB connected Switch in RCM mode.
  Available at https://switchtools.sshnuke.net
 
 ## Compilation
- 1. Download the binary package for libUSBK from https://sourceforge.net/projects/libusbk/ (by pressing the big green Download button)
+ 1. Download the binary package for libUSBK from [this link](https://sourceforge.net/projects/libusbk/) (by pressing the big green Download button)
  2. Run the installer exe and make note of where it installed to (default is C:\libusbK-dev-kit)
  3. Open your Advanced system settings and set the environment variable LIBUSBK_DIR to the path you noted
  4. Open TegraRcmSmash.sln with Visual Studio 2017 and build the Release or Debug configuration!
