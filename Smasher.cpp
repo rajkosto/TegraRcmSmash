@@ -8,7 +8,9 @@
 #include <fcntl.h>
 #include <iostream>
 #include <fstream>
+#include <Shlwapi.h>
 #include "libusbk_int.h"
+#include "iniparse.h"
 
 class RCMDeviceHacker
 {
@@ -216,6 +218,22 @@ static BOOL WINAPI ConsoleSignalHandler(DWORD signal)
 	return TRUE;
 }
 
+static int WrappedPrintToErr(const char* format, ...)
+{
+	char tempBuf[1024];
+	tempBuf[0] = 0;
+
+	va_list vargs;
+	va_start(vargs, format);
+	int numPrinted = vsprintf_s(tempBuf, format, vargs);
+	va_end(vargs);
+
+	WinString widened(&tempBuf[0], &tempBuf[numPrinted]);
+	_ftprintf(stderr, widened.c_str());
+
+	return numPrinted;
+}
+
 int _tmain(int argc, TCHAR* argv[])
 {
 #ifdef UNICODE
@@ -226,29 +244,45 @@ int _tmain(int argc, TCHAR* argv[])
 #endif
 	const TCHAR DEFAULT_MEZZO_FILENAME[] = TEXT("intermezzo.bin");
 	const TCHAR* mezzoFilename = DEFAULT_MEZZO_FILENAME;
+	const TCHAR* iniFilename = nullptr;
 	const TCHAR* inputFilename = nullptr;
 	bool waitForDevice = false;
-	struct AdditionalDataItem
+	bool readbackUsb = false;
+
+	struct LoadDataItem
 	{
-		const TCHAR* filename = nullptr;
-		u32 address = 0;
-		u16 strTerm = 0;
+		std::string name;
+		WinString filename;
+		size_t offset = 0;
+		size_t maxCount = 0;
+		size_t address = 0;
 		bool reloaded = false;
 		ByteVector dataBytes;
-
-		bool isBOOT() const { return memcmp(&address, "BOOT", strlen("BOOT")+1) == 0; }
-		void setBOOT() { memcpy(&address, "BOOT", strlen("BOOT")); strTerm = 0; }
-
-		bool isAddr() const { return strTerm != 0; }
-		void setAddr(u32 newAddr) { address = newAddr; strTerm = 1; }
-		void setSect(const char* sectName) { memset(&address, 0, sizeof(address)); memcpy(&address, sectName, strlen(sectName)); strTerm = 0; }
-		const char* getSect() const { return (const char*)&address; }
 	};
-	vector<AdditionalDataItem> moreData;
+	vector<LoadDataItem> loadData;
 
+	struct CopyDataItem
+	{
+		std::string name;
+		size_t srcaddr = 0;
+		size_t srclen = 0;
+		size_t dstaddr = 0;
+		size_t dstlen = 0;
+		u32 copyType = 0;
+	};
+	vector<CopyDataItem> copyData;
+
+	struct BootDataItem
+	{
+		std::string name;
+		WinString filename;
+		size_t pc = 0;
+	};
+	vector<BootDataItem> bootData;
+	
 	auto PrintUsage = []() -> int
 	{
-		_tprintf(TEXT("Usage: TegraRcmSmash.exe [-V 0x0955] [-P 0x7321] [--relocator=intermezzo.bin] [-w] inputFilename.bin ([PARAM:VALUE]|[0xADDR:filename])*\n"));
+		_tprintf(TEXT("Usage: TegraRcmSmash.exe [-V 0x0955] [-P 0x7321] [--relocator=intermezzo.bin] [-w] inputFilename.bin [-r] [--dataini=coreboot.ini] ([PARAM:VALUE]|[0xADDR:filename])*\n"));
 		return -1;
 	};
 
@@ -258,23 +292,46 @@ int _tmain(int argc, TCHAR* argv[])
 		TCHAR* currArg = argv[i];
 
 		const TCHAR RELOCATOR_ARGUMENT[] = TEXT("--relocator");
+		const TCHAR INIFILE_ARGUMENT[] = TEXT("--dataini");
 		const TCHAR VENDOR_ARGUMENT[] = TEXT("-V");
 		const TCHAR PRODUCT_ARGUMENT[] = TEXT("-P");
 		const TCHAR WAIT_ARGUMENT[] = TEXT("-w");
+		const TCHAR READBACK_ARGUMENT[] = TEXT("-r");
 
-		if (_tcsnicmp(currArg, RELOCATOR_ARGUMENT, array_countof(RELOCATOR_ARGUMENT)-1) == 0)
+		if (_tcsnicmp(currArg, RELOCATOR_ARGUMENT, array_countof(RELOCATOR_ARGUMENT)-1) == 0 ||
+			_tcsnicmp(currArg, INIFILE_ARGUMENT, array_countof(INIFILE_ARGUMENT)-1) == 0)
 		{
-			if (currArg[array_countof(RELOCATOR_ARGUMENT)-1] == '=')
-				mezzoFilename = &currArg[array_countof(RELOCATOR_ARGUMENT)];
-			else if (currArg[array_countof(RELOCATOR_ARGUMENT)-1] == 0)
+			const TCHAR* matchedStr = nullptr;
+			size_t matchedLen = 0;
+
+			if (_tcsnicmp(currArg, RELOCATOR_ARGUMENT, array_countof(RELOCATOR_ARGUMENT)-1) == 0)
+			{
+				matchedStr = RELOCATOR_ARGUMENT;
+				matchedLen = array_countof(RELOCATOR_ARGUMENT)-1;
+			}
+			else if (_tcsnicmp(currArg, INIFILE_ARGUMENT, array_countof(INIFILE_ARGUMENT)-1) == 0)
+			{
+				matchedStr = INIFILE_ARGUMENT;
+				matchedLen = array_countof(INIFILE_ARGUMENT)-1;
+			}
+
+			const TCHAR* currFilename = nullptr;
+			if (currArg[matchedLen] == '=')
+				currFilename = &currArg[matchedLen+1];
+			else if (currArg[matchedLen] == 0)
 			{
 				if (i==argc-1)
 					return PrintUsage();
 
-				mezzoFilename = argv[++i];
+				currFilename = argv[++i];
 			}
 			else
 				return PrintUsage();
+
+			if (matchedStr == RELOCATOR_ARGUMENT)
+				mezzoFilename = currFilename;
+			else if (matchedStr == INIFILE_ARGUMENT)
+				iniFilename = currFilename;
 		}
 		else if (_tcsnicmp(currArg, VENDOR_ARGUMENT, array_countof(VENDOR_ARGUMENT)-1) == 0 ||
 				_tcsnicmp(currArg, PRODUCT_ARGUMENT, array_countof(PRODUCT_ARGUMENT)-1) == 0)
@@ -321,6 +378,10 @@ int _tmain(int argc, TCHAR* argv[])
 		{
 			waitForDevice = true;
 		}
+		else if (_tcsnicmp(currArg, READBACK_ARGUMENT, array_countof(READBACK_ARGUMENT)) == 0)
+		{
+			readbackUsb = true;
+		}
 		else if (currArg[0] == '-') //unknown option
 		{
 			_ftprintf(stderr, TEXT("Unknown option %Ts\n"), currArg);
@@ -344,57 +405,93 @@ int _tmain(int argc, TCHAR* argv[])
 				const TCHAR* leftPart = currArg;
 				const TCHAR* rightPart = colonPos+1;
 
-				AdditionalDataItem newItem;
-				newItem.filename = rightPart;
 				if (leftPartLen >= array_countof(HEXA_PREFIX) &&
 					_tcsnicmp(leftPart, HEXA_PREFIX, array_countof(HEXA_PREFIX)-1) == 0)
 				{
 					leftPart += array_countof(HEXA_PREFIX)-1;
 
+					LoadDataItem newItem;
 					wchar_t* endPos = nullptr;
-					newItem.setAddr(_tcstoul(leftPart, &endPos, 0x10));
+					if (sizeof(newItem.address) == sizeof(unsigned long))
+						newItem.address = _tcstoul(leftPart, &endPos, 0x10);
+					else
+						newItem.address = (size_t)_tcstoull(leftPart, &endPos, 0x10);
+
 					if (endPos == nullptr || endPos == leftPart)
 					{
 						_ftprintf(stderr, TEXT("Invalid load address '%Ts' in additional data argument '%Ts'\n"), leftPart, currArg);
 						return PrintUsage();
 					}
 
-					auto it = std::find_if(moreData.cbegin(), moreData.cend(), [&newItem](const AdditionalDataItem& itm) {
-						return (itm.isAddr() == newItem.isAddr()) && (itm.address == newItem.address);
+					auto it = std::find_if(loadData.cbegin(), loadData.cend(), [&newItem](const LoadDataItem& itm) {
+						return itm.address == newItem.address;
 					});
 
-					if (it != moreData.cbegin())
+					if (it != loadData.cbegin())
 					{
-						_ftprintf(stderr, TEXT("Load address 0x%08x already defined with filename '%Ts'\n"), it->address, it->filename);
+						_ftprintf(stderr, TEXT("Load address 0x%08llx already defined with filename '%Ts'\n"), (u64)it->address, it->filename.c_str());
 						return PrintUsage();
 					}
 
-					moreData.emplace_back(std::move(newItem));
+					newItem.filename = rightPart;
+					loadData.emplace_back(std::move(newItem));
 				}
-				else if (leftPartLen <= sizeof(newItem.address))
+				else
 				{
 					std::string convAscii; convAscii.reserve(_tcslen(leftPart));
 					for (size_t strPos=0; strPos<leftPartLen; strPos++) 
 						convAscii.push_back((char)leftPart[strPos]);
 
-					newItem.setSect(convAscii.c_str());
-
-					auto it = std::find_if(moreData.cbegin(), moreData.cend(), [&newItem](const AdditionalDataItem& itm) {
-						return (itm.isAddr() == newItem.isAddr()) && (itm.address == newItem.address);
-					});
-
-					if (it != moreData.cbegin())
+					if (strcmp(convAscii.c_str(), "BOOT") == 0)
 					{
-						_ftprintf(stderr, TEXT("Load parameter %hs already defined with value '%Ts'\n"), it->getSect(), it->filename);
-						return PrintUsage();
-					}
+						if (bootData.size() > 0)
+						{
+							if (bootData[0].filename.length() > 0)
+								_ftprintf(stderr, TEXT("Load parameter %hs already defined with value '%Ts'\n"), convAscii.c_str(), bootData[0].filename.c_str());
+							else
+								_ftprintf(stderr, TEXT("Load parameter %hs already defined with value 0x%08llx\n"), convAscii.c_str(), (u64)bootData[0].pc);
 
-					moreData.emplace_back(std::move(newItem));
-				}
-				else
-				{
-					_ftprintf(stderr, TEXT("Invalid param name '%Ts' in additional data argument '%Ts'\n"), leftPart, currArg);
-					return PrintUsage();
+							return PrintUsage();
+						}
+
+						bootData.resize(1, BootDataItem());
+						if (_tcsnicmp(rightPart, HEXA_PREFIX, array_countof(HEXA_PREFIX)-1) == 0)
+						{
+							rightPart += array_countof(HEXA_PREFIX)-1;
+
+							wchar_t* endPos = nullptr;
+							if (sizeof(bootData[0].pc) == sizeof(unsigned long))
+								bootData[0].pc = _tcstoul(rightPart, &endPos, 0x10);
+							else
+								bootData[0].pc = (size_t)_tcstoull(rightPart, &endPos, 0x10);
+
+							if (endPos == nullptr || endPos == rightPart)
+							{
+								_ftprintf(stderr, TEXT("Invalid boot address '%Ts' specified\n"), rightPart);
+								return PrintUsage();
+							}
+						}
+						else
+							bootData[0].filename = rightPart;
+					}
+					else
+					{
+						LoadDataItem newItem;
+						newItem.name = std::move(convAscii);
+
+						auto it = std::find_if(loadData.cbegin(), loadData.cend(), [&newItem](const LoadDataItem& itm) {
+							return stricmp(itm.name.c_str(), newItem.name.c_str()) == 0;
+						});
+
+						if (it != loadData.cbegin())
+						{
+							_ftprintf(stderr, TEXT("Load parameter %hs already defined with value '%Ts'\n"), it->name.c_str(), it->filename.c_str());
+							return PrintUsage();
+						}
+
+						newItem.filename = rightPart;
+						loadData.emplace_back(std::move(newItem));
+					}
 				}
 			}
 		}
@@ -450,30 +547,7 @@ int _tmain(int argc, TCHAR* argv[])
 		return PrintUsage();
 	}
 
-	std::sort(moreData.begin(), moreData.end(), [](const AdditionalDataItem& left, const AdditionalDataItem& right) {
-		if (left.isBOOT() != right.isBOOT()) //boot goes last
-		{
-			if (left.isBOOT())
-				return false;
-			if (right.isBOOT())
-				return true;
-		}
-
-		if (left.isAddr() != right.isAddr()) //named go first
-		{
-			if (left.isAddr())
-				return false;
-			if (right.isAddr())
-				return true;
-		}
-
-		if (left.isAddr())
-			return left.address < right.address;
-		else
-			return (strcmp(left.getSect(), right.getSect()) < 0);
-	});
-
-	auto ReadFileToBuf = [](ByteVector& outBuf, const TCHAR* fileType, const TCHAR* inputFilename, bool silent) -> int
+	auto ReadFileToBuf = [](ByteVector& outBuf, const TCHAR* fileType, const TCHAR* inputFilename, size_t offset, size_t maxSize, bool silent) -> int
 	{
 		std::ifstream inputFile(inputFilename, std::ios::binary);
 		if (!inputFile.is_open())
@@ -485,17 +559,24 @@ int _tmain(int argc, TCHAR* argv[])
 		}
 
 		inputFile.seekg(0, std::ios::end);
-		const auto inputSize = inputFile.tellg();
-		inputFile.seekg(0, std::ios::beg);
+		const auto inputSize = (size_t)inputFile.tellg();
+		inputFile.seekg(offset, std::ios::beg);
 
-		outBuf.resize((size_t)inputSize);
+		if (inputSize > offset)
+			outBuf.resize(inputSize-offset);
+		else
+			outBuf.resize(0);
+
+		if (maxSize != 0 && maxSize < outBuf.size())
+			outBuf.resize(maxSize);
+
 		if (outBuf.size() > 0)
 		{
 			inputFile.read((char*)&outBuf[0], outBuf.size());
 			const auto bytesRead = inputFile.gcount();
-			if (bytesRead < inputSize)
+			if (bytesRead < (std::streamsize)outBuf.size())
 			{
-				_ftprintf(stderr, TEXT("Error reading %Ts file '%Ts' (only %llu out of %llu bytes read)\n"), fileType, inputFilename, (u64)bytesRead, (u64)inputSize);
+				_ftprintf(stderr, TEXT("Error reading %Ts file '%Ts' (only %llu out of %llu bytes read)\n"), fileType, inputFilename, (u64)bytesRead, (u64)outBuf.size());
 				return -2;
 			}
 		}
@@ -503,54 +584,142 @@ int _tmain(int argc, TCHAR* argv[])
 		return 0;
 	};
 
-	//populate address for BOOT if necessary, otherwise load file contents
-	for (size_t i=0; i<moreData.size(); i++)
+	if (iniFilename != nullptr)
 	{
-		auto& currData = moreData[i];
-		if (currData.isBOOT())
-		{
-			if (_tcslen(currData.filename) >= array_countof(HEXA_PREFIX) &&
-				_tcsnicmp(currData.filename, HEXA_PREFIX, array_countof(HEXA_PREFIX)-1) == 0)
-			{
-				auto addressStr = currData.filename + array_countof(HEXA_PREFIX)-1;
+		ByteVector iniBuf;
+		auto iniReadRes = ReadFileToBuf(iniBuf, TEXT("ini"), iniFilename, 0, 0, false);
+		if (iniReadRes)
+			return iniReadRes;
 
-				wchar_t* endPos = nullptr;
-				currData.setAddr(_tcstoul(addressStr, &endPos, 0x10));
-				if (endPos == nullptr || endPos == addressStr)
+		if (iniBuf.size() > 0)
+		{
+			auto parsedInfo = parse_memloader_ini((char*)&iniBuf[0], (int)iniBuf.size(), malloc, WrappedPrintToErr);
+			auto infoGuard = MakeScopeGuard([&parsedInfo]() { free_memloader_info(&parsedInfo, free); });
+
+			if (parsedInfo.loads != nullptr)
+			{
+				WinString fileBaseDir;
 				{
-					_ftprintf(stderr, TEXT("Invalid parameter address '%Ts' for setting '%hs'\n"), addressStr, currData.getSect());
-					return -1;
+					TCHAR absDirPath[2048];
+					absDirPath[0] = 0;
+
+					TCHAR* filePart = nullptr;
+					size_t pathLen = GetFullPathName(iniFilename, (unsigned int)array_countof(absDirPath)-1, absDirPath, &filePart);
+					if (filePart != nullptr)
+					{
+						*filePart = 0;
+						pathLen = filePart-absDirPath;
+					}
+
+					fileBaseDir = WinString(absDirPath, pathLen);
+				}
+
+				for (auto currLoadNode = parsedInfo.loads; currLoadNode != nullptr; currLoadNode=currLoadNode->next)
+				{
+					const auto& currLoad = currLoadNode->curr;
+
+					LoadDataItem newItem;
+					newItem.name = currLoad.sectname;
+					newItem.offset = currLoad.skip;
+					newItem.maxCount = currLoad.count;
+					newItem.address = currLoad.dst;
+					
+					if (sizeof(TCHAR) == sizeof(char))
+						newItem.filename = WinString(currLoad.filename, currLoad.filename+strlen(currLoad.filename));
+					else
+					{
+						TCHAR convFilename[2048];
+						convFilename[0] = 0;
+
+						const auto numChars = MultiByteToWideChar(CP_UTF8, 0, currLoad.filename, -1, convFilename, (int)array_countof(convFilename)-1);
+						if (numChars > 0)
+							newItem.filename = WinString(convFilename, numChars-1);
+					}
+
+					//make it absolute
+					if (fileBaseDir.length() > 1)
+					{
+						wchar_t wideFilename[2048];
+						wideFilename[0] = 0;
+
+						const wchar_t* combinedPath = PathCombine(wideFilename, fileBaseDir.c_str(), newItem.filename.c_str());
+						newItem.filename = combinedPath;
+					}
+
+					loadData.emplace_back(std::move(newItem));
 				}
 			}
-			else
+
+			for (auto currBootNode = parsedInfo.copies; currBootNode != nullptr; currBootNode=currBootNode->next)
 			{
-				bool foundAddress = false;
-				for (size_t j=0; j<moreData.size(); j++)
-				{
-					if (j == i)
-						continue;
+				const auto& currCopy = currBootNode->curr;
 
-					const auto& otherData = moreData[j];
-					if (otherData.isAddr() && _tcsicmp(currData.filename, otherData.filename) == 0)
-					{
-						currData.setAddr(otherData.address);
-						foundAddress = true;
-						break;
-					}
-				}
+				CopyDataItem newItem;
+				newItem.name = currCopy.sectname;
+				newItem.copyType = currCopy.compType;
+				newItem.srcaddr = currCopy.src;
+				newItem.srclen = currCopy.srclen;
+				newItem.dstaddr = currCopy.dst;
+				newItem.dstlen = currCopy.dstlen;
 
-				if (!foundAddress)
-				{
-					_ftprintf(stderr, TEXT("No load address defined for filename '%Ts' (required for setting '%hs')\n"), currData.filename, currData.getSect());
-					return -1;
-				}
+				copyData.emplace_back(std::move(newItem));
+			}
+
+			for (auto currBootNode = parsedInfo.boots; currBootNode != nullptr; currBootNode=currBootNode->next)
+			{
+				const auto& currBoot = currBootNode->curr;
+
+				BootDataItem newItem;
+				newItem.name = currBoot.sectname;
+				newItem.pc = currBoot.pc;
+
+				bootData.emplace_back(std::move(newItem));
+			}
+		}		
+	}
+
+	std::sort(loadData.begin(), loadData.end(), [](const LoadDataItem& left, const LoadDataItem& right) 
+	{
+		if (left.name.length() != 0 && right.name.length() == 0) //named go first
+			return true;
+		if (left.name.length() == 0 && right.name.length() != 0)
+			return false;
+
+		if (left.address != 0 && right.address != 0)
+			return left.address < right.address;
+		else
+			return (strcmp(left.name.c_str(), right.name.c_str()) < 0);
+	});
+
+	//load file contents
+	for (auto& currData : loadData)
+	{
+		auto readFileRes = ReadFileToBuf(currData.dataBytes, TEXT("data"), currData.filename.c_str(), currData.offset, currData.maxCount, false);
+		if (readFileRes != 0)
+			return readFileRes;
+	}
+
+	//populate address for BOOT if necessary
+	for (auto& currBoot : bootData)
+	{
+		if (currBoot.filename.length() == 0)
+			continue;
+
+		bool foundAddress = false;
+		for (const auto& otherData : loadData)
+		{
+			if (otherData.name.length() == 0 && _tcsicmp(currBoot.filename.c_str(), otherData.filename.c_str()) == 0)
+			{
+				currBoot.pc = otherData.address;
+				foundAddress = true;
+				break;
 			}
 		}
-		else
+
+		if (!foundAddress)
 		{
-			auto readFileRes = ReadFileToBuf(currData.dataBytes, TEXT("data"), currData.filename, false);
-			if (readFileRes != 0)
-				return readFileRes;
+			_ftprintf(stderr, TEXT("No load address defined for filename '%Ts' (required for setting BOOT)\n"), currBoot.filename.c_str());
+			return -1;
 		}
 	}
 	
@@ -566,7 +735,7 @@ int _tmain(int argc, TCHAR* argv[])
 	ByteVector mezzoBuf;
 	if (!usingNoMezzo)
 	{
-		auto readFileRes = ReadFileToBuf(mezzoBuf, TEXT("relocator"), mezzoFilename, usingBuiltinMezzo);
+		auto readFileRes = ReadFileToBuf(mezzoBuf, TEXT("relocator"), mezzoFilename, 0, 0, usingBuiltinMezzo);
 		if (readFileRes != 0)
 		{
 			if (usingBuiltinMezzo)
@@ -592,7 +761,7 @@ int _tmain(int argc, TCHAR* argv[])
 	}
 
 	ByteVector userFileBuf;
-	auto readFileRes = ReadFileToBuf(userFileBuf, TEXT("payload"), inputFilename, false);
+	auto readFileRes = ReadFileToBuf(userFileBuf, TEXT("payload"), inputFilename, 0, 0, false);
 	if (readFileRes != 0)
 		return readFileRes;
 
@@ -766,7 +935,7 @@ int _tmain(int argc, TCHAR* argv[])
 			assert(currPayloadOffs == payloadBuf.size());
 
 			// Reload the user-supplied binary in case it changed
-			readFileRes = ReadFileToBuf(userFileBuf, TEXT("payload"), inputFilename, false);
+			readFileRes = ReadFileToBuf(userFileBuf, TEXT("payload"), inputFilename, 0, 0, false);
 			if (readFileRes != 0)
 				return readFileRes;
 
@@ -797,7 +966,7 @@ int _tmain(int argc, TCHAR* argv[])
 			// Reload the user-supplied relocator in case it changed
 			if (!usingBuiltinMezzo)
 			{
-				readFileRes = ReadFileToBuf(mezzoBuf, TEXT("relocator"), mezzoFilename, false);
+				readFileRes = ReadFileToBuf(mezzoBuf, TEXT("relocator"), mezzoFilename, 0, 0, false);
 				if (readFileRes != 0)
 					return readFileRes;
 			}
@@ -826,7 +995,7 @@ int _tmain(int argc, TCHAR* argv[])
 			}
 
 			// Reload the user-supplied binary in case it changed
-			readFileRes = ReadFileToBuf(userFileBuf, TEXT("payload"), inputFilename, false);
+			readFileRes = ReadFileToBuf(userFileBuf, TEXT("payload"), inputFilename, 0, 0, false);
 			if (readFileRes != 0)
 				return readFileRes;
 		}
@@ -893,19 +1062,19 @@ int _tmain(int argc, TCHAR* argv[])
 
 		_tprintf(TEXT("Smashed the stack with a 0x%04x byte SETUP request!\n"), smashRes);
 
-		if (moreData.size() > 0)
+		if (readbackUsb || loadData.size() > 0 || copyData.size() > 0 || bootData.size() > 0)
 		{
 			ByteVector readBuffer(32768, 0);
 			int bytesRead = 0;
 			while ((bytesRead = rcmDev.read(&readBuffer[0], readBuffer.size())) > 0)
 			{
-				auto dataIt = std::find_if(moreData.begin(), moreData.end(), [bytesRead,&readBuffer](const AdditionalDataItem& itm) 
+				auto dataIt = std::find_if(loadData.begin(), loadData.end(), [bytesRead,&readBuffer](const LoadDataItem& itm) 
 				{
-					if (itm.isAddr() || itm.isBOOT())
+					if (itm.name.length() == 0)
 						return false;
 
-					const char* dataName = itm.getSect();
-					const size_t dataNameLen = strlen(dataName);
+					const char* dataName = itm.name.c_str();
+					const size_t dataNameLen = itm.name.length();
 					if (bytesRead > int(dataNameLen) && readBuffer[dataNameLen] == '\n' &&
 						strncmp((const char*)&readBuffer[0], dataName, dataNameLen) == 0)
 						return true;
@@ -917,76 +1086,107 @@ int _tmain(int argc, TCHAR* argv[])
 				if (bytesRead == array_countof(READY_INDICATOR)-1 && memcmp(&readBuffer[0], READY_INDICATOR, array_countof(READY_INDICATOR)-1) == 0)
 				{
 					_tprintf(TEXT("Switching to command mode due to %hs"), READY_INDICATOR);
-					for (auto& currData : moreData)
+					for (auto& currData : loadData)
 					{
-						if (!currData.isAddr() && !currData.isBOOT())
+						if (!currData.reloaded)
+						{
+							readFileRes = ReadFileToBuf(currData.dataBytes, TEXT("data"), currData.filename.c_str(), currData.offset, currData.maxCount, false);
+							if (readFileRes != 0)
+								return readFileRes;
+
+							if (currData.dataBytes.size() < currData.maxCount)
+								currData.dataBytes.resize(currData.maxCount, 0);
+
+							currData.reloaded = true;
+						}
+
+						_tprintf(TEXT("Sending %Ts (%llu bytes) to address 0x%08llx\n"), currData.filename.c_str(), (u64)currData.dataBytes.size(), (u64)currData.address);
+						if (currData.dataBytes.size() == 0)
 							continue;
 
-						if (!currData.isBOOT())
+						int bytesSent = rcmDev.write((const u8*)"RECV", strlen("RECV"));
+						if (bytesSent == strlen("RECV"))
 						{
-							if (!currData.reloaded)
+							u32 offsetData[] ={ _byteswap_ulong((u32)currData.address), _byteswap_ulong((u32)currData.dataBytes.size()) };
+							bytesSent = rcmDev.write((const u8*)&offsetData[0], sizeof(offsetData));
+							if (bytesSent == sizeof(offsetData))
+								bytesSent = rcmDev.write(&currData.dataBytes[0], currData.dataBytes.size(), readBuffer.size());
+						}
+						if (bytesSent != int(currData.dataBytes.size()))
+						{
+							if (bytesSent < 0)
 							{
-								readFileRes = ReadFileToBuf(currData.dataBytes, TEXT("data"), currData.filename, false);
-								if (readFileRes != 0)
-									return readFileRes;
-
-								currData.reloaded = true;
+								_ftprintf(stderr, TEXT("Got win32 err %d during send operation!\n"), -bytesSent);
+								return -10;
 							}
-
-							_tprintf(TEXT("Sending %Ts (%llu bytes) to address 0x%08x\n"), currData.filename, (u64)currData.dataBytes.size(), currData.address);
-							if (currData.dataBytes.size() == 0)
+							else if (size_t(bytesSent) < currData.dataBytes.size())
+							{
+								_ftprintf(stderr, TEXT("Only sent %d out of %llu bytes for data file %Ts!\n"), bytesSent, (u64)currData.dataBytes.size(), currData.filename.c_str());
 								continue;
-
-							int bytesSent = rcmDev.write((const u8*)"RECV", strlen("RECV"));
-							if (bytesSent == strlen("RECV"))
-							{
-								u32 offsetData[] ={ _byteswap_ulong((u32)currData.address), _byteswap_ulong((u32)currData.dataBytes.size()) };
-								bytesSent = rcmDev.write((const u8*)&offsetData[0], sizeof(offsetData));
-								if (bytesSent == sizeof(offsetData))
-									bytesSent = rcmDev.write(&currData.dataBytes[0], currData.dataBytes.size(), readBuffer.size());
-							}
-							if (bytesSent != int(currData.dataBytes.size()))
-							{
-								if (bytesSent < 0)
-								{
-									_ftprintf(stderr, TEXT("Got win32 err %d during send operation!\n"), -bytesSent);
-									return -10;
-								}
-								else if (size_t(bytesSent) < currData.dataBytes.size())
-								{
-									_ftprintf(stderr, TEXT("Only sent %d out of %llu bytes for data file %Ts!\n"), bytesSent, (u64)currData.dataBytes.size(), currData.filename);
-									continue;
-								}
 							}
 						}
-						else
+					}
+
+					for (const auto& currData : copyData)
+					{
+						_tprintf(TEXT("Sending COPY command %hs (from 0x%08llx-0x%08llx to 0x%08llx-0x%08llx) type %u\n"), 
+							currData.name.c_str(), (u64)currData.srcaddr, (u64)currData.srcaddr+currData.srclen,
+							(u64)currData.dstaddr, (u64)currData.dstaddr+(u64)currData.dstlen, currData.copyType);
+						
+
+						int bytesToSend = (int)strlen("COPY");
+						int bytesSent = rcmDev.write((const u8*)"COPY", (size_t)bytesToSend);
+						if (bytesSent == bytesToSend)
 						{
-							_tprintf(TEXT("Booting AArch64 with PC 0x%08x...\n"), currData.address);
-							int bytesSent = rcmDev.write((const u8*)"BOOT", strlen("BOOT"));
-							if (bytesSent == strlen("BOOT"))
+							u32 copyData[] ={ _byteswap_ulong((u32)currData.copyType), 
+								_byteswap_ulong((u32)currData.srcaddr), _byteswap_ulong((u32)currData.srclen),
+								_byteswap_ulong((u32)currData.dstaddr), _byteswap_ulong((u32)currData.dstlen) };
+
+							bytesToSend = sizeof(copyData);
+							bytesSent = rcmDev.write((const u8*)&copyData[0], (size_t)bytesToSend);
+						}
+						if (bytesSent != bytesToSend)
+						{
+							if (bytesSent < 0)
 							{
-								u32 addrData = _byteswap_ulong(currData.address);
-								bytesSent = rcmDev.write((const u8*)&addrData, sizeof(addrData));
-								if (bytesSent == sizeof(addrData))
-								{
-									_tprintf(TEXT("BOOT command sent successfully! Exiting.\n"));
-									return 0;
-								}
+								_ftprintf(stderr, TEXT("Got win32 err %d during send operation!\n"), -bytesSent);
+								return -10;
+							}
+							else if (bytesSent < bytesToSend)
+							{
+								_ftprintf(stderr, TEXT("Only sent %d out of %d bytes for copy command %hs!\n"), bytesSent, bytesToSend, currData.name.c_str());
+								continue;
+							}
+						}
+					}
+
+					for (const auto& currData : bootData)
+					{
+						_tprintf(TEXT("Booting AArch64 with PC 0x%08llx...\n"), (u64)currData.pc);
+						int bytesSent = rcmDev.write((const u8*)"BOOT", strlen("BOOT"));
+						if (bytesSent == strlen("BOOT"))
+						{
+							u32 addrData = _byteswap_ulong((u32)currData.pc);
+							bytesSent = rcmDev.write((const u8*)&addrData, sizeof(addrData));
+							if (bytesSent == sizeof(addrData))
+							{
+								_tprintf(TEXT("BOOT command sent successfully! Exiting.\n"));
+								return 0;
 							}
 						}
 					}
 				}
-				else if (dataIt == moreData.end()) //no matching section to send, just print out the message
+				else if (dataIt == loadData.end()) //no matching section to send, just print out the message
 				{
 					WinString printMe((const char*)&readBuffer[0], (const char*)&readBuffer[bytesRead]);
 					_tprintf(printMe.c_str());
 				}
 				else //got a section to send
 				{
-					_tprintf(TEXT("Switching to sending of section '%hs'\n"), dataIt->getSect());
+					_tprintf(TEXT("Switching to sending of section '%hs'\n"), dataIt->name.c_str());
 					if (!dataIt->reloaded)
 					{
-						readFileRes = ReadFileToBuf(dataIt->dataBytes, TEXT("data"), dataIt->filename, false);
+						readFileRes = ReadFileToBuf(dataIt->dataBytes, TEXT("data"), dataIt->filename.c_str(), dataIt->offset, dataIt->maxCount, false);
 						if (readFileRes != 0)
 							return readFileRes;
 
@@ -1004,14 +1204,14 @@ int _tmain(int argc, TCHAR* argv[])
 
 						if (length == 0)
 						{
-							_tprintf(TEXT("Finished sending section '%hs' (total bytes sent: %llu)\n"), dataIt->getSect(), (u64)numBytesSent);
+							_tprintf(TEXT("Finished sending section '%hs' (total bytes sent: %llu)\n"), dataIt->name.c_str(), (u64)numBytesSent);
 							break;
 						}
 
 						const auto neededBytes = size_t(offset)+size_t(length);
 						if (neededBytes > dataIt->dataBytes.size())
 						{
-							_ftprintf(stderr, TEXT("Device requested %llu bytes (we only have %llu in file '%Ts')!\n"), (u64)neededBytes, (u64)dataIt->dataBytes.size(), dataIt->filename);
+							_ftprintf(stderr, TEXT("Device requested %llu bytes (we only have %llu in file '%Ts')!\n"), (u64)neededBytes, (u64)dataIt->dataBytes.size(), dataIt->filename.c_str());
 							return -2;
 						}
 

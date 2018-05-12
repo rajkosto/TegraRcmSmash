@@ -12,9 +12,11 @@
     <ClInclude Include="Win32Def.h" />
     <ClInclude Include="WinHandle.h" />
     <ClInclude Include="libusbk_int.h" />
+    <ClInclude Include="iniparse.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Smasher.cpp" />
+    <ClCompile Include="iniparse.c" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="TegraRcmSmash.rc">

@@ -11,17 +11,18 @@ Lets you launch fusee/shofEL2 payloads to a USB connected Switch in RCM mode.
  5. Click the big Install Driver button. Device manager should now show "APX" under libusbK USB Devices tree item.
 
 ## Usage
- TegraRcmSmash.exe [-V 0x0955] [-P 0x7321] [--relocator=intermezzo.bin] [-w] inputFilename.bin ([PARAM:VALUE]|[0xADDR:filename])*
+ TegraRcmSmash.exe [-V 0x0955] [-P 0x7321] [--relocator=intermezzo.bin] [-w] inputFilename.bin [-r] [--dataini=coreboot.ini] ([PARAM:VALUE]|[0xADDR:filename])*
 
  If your Switch is ready and waiting in RCM mode, you can also just drag and drop the payload right onto TegraRcmSmash.exe
 
  An example cmdline for launching linux using coreboot is something like this (the empty relocator is important):
    **TegraRcmSmash.exe -w --relocator= "coreboot/cbfs.bin" "CBFS:coreboot/coreboot.rom"**
 
+ A simpler way to load coreboot/other AArch64 payloads is to use https://github.com/rajkosto/memloader and either put the files on microsd or use the --dataini parameter
+
  After that, you can use imx_load as you would on Linux (Windows binaries available [here](https://github.com/rajkosto/imx_usb_loader/releases))
 
  Alternatively, setup your u-boot cmdline to just load everything from microSD to not bother with imx_load ;)
-
 
 ## Binary releases
  Available at https://switchtools.sshnuke.net
