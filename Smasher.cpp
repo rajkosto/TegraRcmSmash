@@ -1170,8 +1170,17 @@ int _tmain(int argc, TCHAR* argv[])
 							bytesSent = rcmDev.write((const u8*)&addrData, sizeof(addrData));
 							if (bytesSent == sizeof(addrData))
 							{
-								_tprintf(TEXT("BOOT command sent successfully! Exiting.\n"));
-								return 0;
+								_tprintf(TEXT("BOOT command sent successfully!"));
+								if (!readbackUsb)
+								{
+									_tprintf(TEXT(" Exiting.\n"));
+									return 0;
+								}
+								else
+								{
+									_tprintf(TEXT(" Continuing.\n"));
+									break;
+								}
 							}
 						}
 					}
